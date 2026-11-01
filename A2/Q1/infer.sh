@@ -44,6 +44,6 @@ echo "Input JSONL: $INPUT_JSONL"
 echo "Execution Command: ${PYTHON_EXEC[*]}"
 echo "=========================================="
 
-"${PYTHON_EXEC[@]}" "$SCRIPT_DIR/infer.py" "$MODE" "$OUTPUT_DIR" "$INPUT_JSONL"
+"${PYTHON_EXEC[@]}" "$SCRIPT_DIR/infer.py" "$MODE" "$OUTPUT_DIR" "$INPUT_JSONL" "${@:4}"
 
 echo "Task 1 inference completed successfully."

@@ -179,6 +179,7 @@ def main():
     parser.add_argument("task", choices=["q1", "q2", "q3", "test_example"], help="Task to evaluate")
     parser.add_argument("pred_file", nargs="?", help="Path to predictions JSONL file")
     parser.add_argument("gold_file", nargs="?", help="Path to gold JSONL file")
+    parser.add_argument("--baseline_file", type=str, default=None, help="Path to baseline predictions JSONL file for comparison")
     args = parser.parse_args()
 
     if args.task == "test_example":
@@ -189,13 +190,18 @@ def main():
         print(f"Error: task {args.task} requires <pred_file> and <gold_file>")
         sys.exit(1)
 
-    preds = {}
-    with open(args.pred_file, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                d = json.loads(line)
-                preds[d["id"]] = d.get("pred_idx", d.get("answer", -1))
+    def load_preds(path):
+        res = {}
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    d = json.loads(line)
+                    res[d["id"]] = d.get("pred_idx", d.get("answer", -1))
+        return res
+
+    preds = load_preds(args.pred_file)
+    baseline_preds = load_preds(args.baseline_file) if args.baseline_file else None
 
     gold_items = []
     with open(args.gold_file, "r", encoding="utf-8") as f:
@@ -214,11 +220,35 @@ def main():
             for cat, r in results["categories"].items():
                 print(f"{cat:<25} | {r['acc_ambig']:<10.4f} | {r['acc_disambig']:<10.4f} | {r['s_AMB']:<8.4f} | {r['s_DIS']:<8.4f} | {r['BBQ_c']:<8.4f}")
             print("-" * 80)
-            print(f"Overall S_BBQ Score (average over {results['num_categories']} categories): {results['S_BBQ']:.4f}\n")
+            print(f"Overall S_BBQ Score (average over {results['num_categories']} categories): {results['S_BBQ']:.4f}")
+
+            if baseline_preds:
+                base_results = eval_q1_bias(baseline_preds, gold_items)
+                print(f"Baseline S_BBQ Score: {base_results['S_BBQ']:.4f}")
+                diff = results['S_BBQ'] - base_results['S_BBQ']
+                print(f"BBQ Improvement over Baseline: {diff:+.4f}\n")
+            else:
+                print()
         else:
             results = eval_q1_qa(preds, gold_items)
             print("\n=== Task 1 QA Utility Evaluation Results ===")
-            print(f"Accuracy: {results['accuracy']:.4f} ({results['correct']}/{results['total']})\n")
+            print(f"Model Accuracy: {results['accuracy'] * 100:.2f}% ({results['correct']}/{results['total']})")
+
+            if baseline_preds:
+                base_results = eval_q1_qa(baseline_preds, gold_items)
+                base_acc = base_results['accuracy']
+                model_acc = results['accuracy']
+                diff_pct = (model_acc - base_acc) * 100.0
+
+                print(f"Baseline Accuracy: {base_acc * 100:.2f}% ({base_results['correct']}/{base_results['total']})")
+                print(f"Difference (Model - Baseline): {diff_pct:+.2f}%")
+
+                if model_acc >= (base_acc - 0.02):
+                    print("Status: [PASS] Accuracy is within 2 percentage points of baseline. Utility constraint satisfied!\n")
+                else:
+                    print("Status: [FAIL] Accuracy is >2% below baseline. Penalty condition: 0.5x marks multiplier!\n")
+            else:
+                print()
 
 
 if __name__ == "__main__":

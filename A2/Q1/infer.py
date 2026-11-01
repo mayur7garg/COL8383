@@ -23,6 +23,7 @@ def parse_args():
     parser.add_argument("output_dir", type=str, help="Output directory where configs/artifacts were saved")
     parser.add_argument("input_file", type=str, help="Path to input JSONL file")
     parser.add_argument("--batch_size", type=int, default=16, help="Batch size for inference")
+    parser.add_argument("--baseline", action="store_true", help="Evaluate pure baseline model (ignores LoRA adapter and writes to output_<mode>_baseline.jsonl)")
     return parser.parse_args()
 
 
@@ -162,15 +163,18 @@ def main():
     if device == "cpu":
         model = model.to(device)
 
-    # Check if a trained PEFT / LoRA adapter exists in output_dir
+    # Check if a trained PEFT / LoRA adapter exists in output_dir (unless --baseline is specified)
     adapter_config_path = os.path.join(args.output_dir, "adapter_config.json")
-    if os.path.exists(adapter_config_path):
+    if not args.baseline and os.path.exists(adapter_config_path):
         logging.info(f"Loading trained PEFT/LoRA adapter from {args.output_dir}...")
         from peft import PeftModel
         model = PeftModel.from_pretrained(model, args.output_dir)
         logging.info("Trained LoRA adapter loaded successfully.")
     else:
-        logging.info("No trained adapter found in output_dir; evaluating base model.")
+        if args.baseline:
+            logging.info("Evaluating baseline unadapted base model (--baseline flag active).")
+        else:
+            logging.info("No trained adapter found in output_dir; evaluating base model.")
 
     model.eval()
 
@@ -270,7 +274,7 @@ def main():
     os.makedirs(pred_dir, exist_ok=True)
     os.makedirs(args.output_dir, exist_ok=True)
 
-    filename = f"output_{args.mode}.jsonl"
+    filename = f"output_{args.mode}{'_baseline' if args.baseline else ''}.jsonl"
     out_path_output_dir = os.path.join(args.output_dir, filename)
     out_path_pred_dir = os.path.join(pred_dir, filename)
 
