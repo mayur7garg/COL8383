@@ -119,14 +119,14 @@ def main():
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
             torch_dtype=dtype,
-            device_map="auto" if device == "cuda" else None,
+            device_map = "auto",
             local_files_only=True
         )
     except Exception:
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
             torch_dtype=dtype,
-            device_map="auto" if device == "cuda" else None
+            device_map = "auto"
         )
 
     adapter_config_path = Path(args.output_dir) / "adapter_config.json"
