@@ -1,10 +1,3 @@
-#!/usr/bin/env python3
-"""
-Task 2 Watermark Detection
-Computes the detection z-score for unprompted input texts.
-Writes <output_dir>/scores_<condition>.jsonl with {"id": "...", "score": float}.
-"""
-
 import argparse
 import json
 import math
@@ -13,28 +6,18 @@ import sys
 from pathlib import Path
 from typing import Dict, Any, List
 
-import numpy as np
 from transformers import AutoTokenizer
 
-
 def parse_args():
-    parser = argparse.ArgumentParser(description="Task 2 Watermark Detector")
-    parser.add_argument("input_file", type=str, help="Input JSONL file containing {'id', 'text'}")
-    parser.add_argument("output_dir", type=str, help="Output directory where watermark_config.json resides")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("input_file", type = str)
+    parser.add_argument("output_dir", type = str)
     return parser.parse_args()
 
-
 def extract_condition_name(input_path: Path) -> str:
-    stem = input_path.stem
-    # Match patterns like: generated_clean_42 -> clean, generated_short_123 -> short
-    m = re.match(r"generated_([a-zA-Z0-9_]+)_[0-9]+", stem)
-    if m:
-        return m.group(1)
-    # Match patterns like: human, human_short, clean, short
-    if stem.startswith("scores_"):
-        return stem.replace("scores_", "")
-    return stem
-
+    # generated_clean_42 -> clean, generated_short_123 -> short
+    m = re.fullmatch(r"generated_([a-zA-Z0-9_]+)_[0-9]+", input_path.stem)
+    return m.group(1) if m else input_path.stem
 
 def compute_z_score(tokens: List[int], config: Dict[str, Any]) -> float:
     T = len(tokens)
@@ -52,7 +35,6 @@ def compute_z_score(tokens: List[int], config: Dict[str, Any]) -> float:
     threshold_uni = int(gamma_uni * modulus)
     vocab_len = len(token_hashes)
 
-    # 1. Bigram evaluation over T-1 transitions
     N_bi = T - 1
     G_bi = 0
     for i in range(1, T):
@@ -67,7 +49,6 @@ def compute_z_score(tokens: List[int], config: Dict[str, Any]) -> float:
     std_bi = math.sqrt(N_bi * gamma_bi * (1.0 - gamma_bi))
     z_bi = (G_bi - expected_bi) / std_bi if std_bi > 0 else 0.0
 
-    # 2. Unigram evaluation over T tokens
     N_uni = T
     G_uni = 0
     for i in range(T):
@@ -81,9 +62,7 @@ def compute_z_score(tokens: List[int], config: Dict[str, Any]) -> float:
     std_uni = math.sqrt(N_uni * gamma_uni * (1.0 - gamma_uni))
     z_uni = (G_uni - expected_uni) / std_uni if std_uni > 0 else 0.0
 
-    # Combined composite test statistic
-    composite_score = z_bi + 0.6 * z_uni
-    return float(composite_score)
+    return float(config["delta_bi"] * z_bi + config["delta_uni"] * z_uni)
 
 
 def main():
@@ -116,26 +95,19 @@ def main():
 
     scored_records = []
     for it in items:
-        text = it.get("text", "")
-        tokens = tokenizer.encode(text, add_special_tokens=False)
-        score = compute_z_score(tokens, config)
+        tokens = tokenizer.encode(it.get("text", ""), add_special_tokens = False)
         scored_records.append({
             "id": it["id"],
-            "score": round(score, 4)
+            "score": compute_z_score(tokens, config)
         })
 
     condition = extract_condition_name(input_path)
-    # Output file: scores_<condition>.jsonl and scores_<condition>
-    out_jsonl = output_dir / f"scores_{condition}.jsonl"
-    out_raw = output_dir / f"scores_{condition}"
+    out_path = output_dir / f"scores_{condition}.jsonl"
+    with out_path.open("w", encoding = "utf-8") as f:
+        for rec in scored_records:
+            f.write(json.dumps(rec) + "\n")
 
-    for target in [out_jsonl, out_raw]:
-        with target.open("w", encoding="utf-8") as f:
-            for rec in scored_records:
-                f.write(json.dumps(rec) + "\n")
-
-    print(f"Successfully wrote {len(scored_records)} detection scores to {out_jsonl}")
-
+    print(f"Wrote {len(scored_records)} detection scores to {out_path}")
 
 if __name__ == "__main__":
     main()

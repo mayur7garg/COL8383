@@ -506,11 +506,9 @@ def main():
         neg_clean = load_scores(scores_dir / "scores_human.jsonl") or load_scores(scores_dir / "scores_human")
         neg_short = load_scores(scores_dir / "scores_human_short.jsonl") or load_scores(scores_dir / "scores_human_short")
 
-        if not neg_clean:
-            print("Note: scores_human.jsonl not found in directory. Using 500 standard null-distribution scores for testing.")
-            neg_clean = list(np.random.normal(0.0, 1.0, 500))
-        if not neg_short:
-            neg_short = list(np.random.normal(0.0, 1.0, 500))
+        if not neg_clean or not neg_short:
+            print("Error: Missing human negative scores for clean or short conditions.")
+            sys.exit(1)
 
         res = eval_q2_detection(scores_by_cond, neg_clean, neg_short)
         print("\n=== Task 2 Watermark Detection Results ===")

@@ -1,5 +1,7 @@
 .venv
 .DS_STORE
 __pycache__
+uv.lock
 /Q*/out/
 /Q*/predictions/
+/runs/

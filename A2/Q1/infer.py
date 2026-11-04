@@ -8,13 +8,12 @@ import torch
 from peft import PeftModel
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
-
 def parse_args():
-    parser = argparse.ArgumentParser(description="Task 1 Inference")
-    parser.add_argument("mode", choices=["bias", "qa"], help="Inference mode: 'bias' or 'qa'")
-    parser.add_argument("output_dir", type=str, help="Output directory where configs/artifacts were saved")
-    parser.add_argument("input_file", type=str, help="Path to input JSONL file")
-    parser.add_argument("--baseline", action="store_true", help="Evaluate pure baseline model (ignores LoRA adapter and writes to output_<mode>_baseline.jsonl)")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("mode", choices = ["bias", "qa"])
+    parser.add_argument("output_dir", type = str)
+    parser.add_argument("input_file", type = str)
+    parser.add_argument("--baseline", action = "store_true")
     return parser.parse_args()
 
 REQUIRED_CONFIG_KEYS = {"model_name", "bias_system_prompt", "qa_system_prompt", "unknown_keywords", "ambig_margin"}
@@ -173,12 +172,12 @@ def main():
             batch_items = items[start_idx : start_idx + batch_size]
             prompts = [build_prompt(it, args.mode, config, tokenizer) for it in batch_items]
 
-            inputs = tokenizer(prompts, return_tensors="pt", padding=True, truncation=True)
+            inputs = tokenizer(prompts, return_tensors = "pt", padding = True, truncation = True)
             input_ids = inputs["input_ids"].to(device)
             attention_mask = inputs["attention_mask"].to(device)
 
-            outputs = model(input_ids=input_ids, attention_mask=attention_mask)
-            next_logits = outputs.logits[:, -1, :]  # Shape: [batch_size, vocab_size]
+            outputs = model(input_ids=input_ids, attention_mask = attention_mask)
+            next_logits = outputs.logits[:, -1, :]  # [batch_size, vocab_size]
 
             for b_idx, it in enumerate(batch_items):
                 num_options = len(it.get("options", []))
@@ -216,21 +215,14 @@ def main():
                 predictions.append({"id": it["id"], "pred_idx": pred})
 
     pred_dir = Path(__file__).resolve().parent.parent / "predictions" / "Q1"
-    output_dir = Path(args.output_dir).resolve()
     pred_dir.mkdir(parents = True, exist_ok = True)
-    output_dir.mkdir(parents = True, exist_ok = True)
+    out_path = pred_dir / f"output_{args.mode}{'_baseline' if args.baseline else ''}.jsonl"
 
-    filename = f"output_{args.mode}{'_baseline' if args.baseline else ''}.jsonl"
-    out_path_output_dir = output_dir / filename
-    out_path_pred_dir = pred_dir / filename
+    with out_path.open("w", encoding = "utf-8") as f:
+        for pred in predictions:
+            f.write(json.dumps(pred) + "\n")
 
-    for target_path in [out_path_output_dir, out_path_pred_dir]:
-        with target_path.open("w", encoding="utf-8") as f:
-            for p in predictions:
-                f.write(json.dumps(p) + "\n")
-        print(f"Wrote {len(predictions)} predictions to {target_path}")
-
-    print(f"Inference complete: {len(predictions)} lines written to {out_path_pred_dir}")
+    print(f"Inference complete: {len(predictions)} lines written to {out_path}")
 
 if __name__ == "__main__":
     main()
