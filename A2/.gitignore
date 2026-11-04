@@ -2,6 +2,7 @@
 .DS_STORE
 __pycache__
 uv.lock
+/predictions/
 /Q*/out/
 /Q*/predictions/
 /runs/
