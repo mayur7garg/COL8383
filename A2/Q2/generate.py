@@ -12,7 +12,6 @@ def parse_args():
     parser.add_argument("input_file", type = str)
     parser.add_argument("output_dir", type = str)
     parser.add_argument("seed", type = int)
-    parser.add_argument("--batch_size", type = int, default = 16)
     return parser.parse_args()
 
 def load_config(output_dir: Path) -> Dict[str, Any]:
@@ -40,10 +39,10 @@ def main():
     delta_bi = config["delta_bi"]
     delta_uni = config["delta_uni"]
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    dtype = torch.bfloat16 if (torch.cuda.is_available() and torch.cuda.is_bf16_supported()) else (torch.float16 if torch.cuda.is_available() else torch.float32)
-
-    print(f"Generating watermarked text with seed={args.seed}")
+    device = "cuda"
+    dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+    batch_size = 16
+    print(f"Generating watermarked text with seed: {args.seed}")
     print(f"Input: {input_file} | Output dir: {output_dir}")
     print(f"Device: {device}, dtype: {dtype}")
 
@@ -88,8 +87,8 @@ def main():
     pad_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
 
     with torch.no_grad():
-        for start in range(0, len(items), args.batch_size):
-            batch = items[start : start + args.batch_size]
+        for start in range(0, len(items), batch_size):
+            batch = items[start : start + batch_size]
             prompts = [tokenizer.encode(it["prompt"], add_special_tokens = False) or [tokenizer.eos_token_id] for it in batch]
             max_len = max(len(p) for p in prompts)
             input_ids = torch.tensor([[pad_id] * (max_len - len(p)) + p for p in prompts], device=device)

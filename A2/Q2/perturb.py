@@ -53,8 +53,8 @@ def apply_substitution(items: List[Dict[str, Any]], tokenizer, seed: int) -> Lis
     return results
 
 def apply_paraphrase(items: List[Dict[str, Any]], instruct_model_name: str) -> List[Dict[str, Any]]:
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    dtype = torch.bfloat16 if (torch.cuda.is_available() and torch.cuda.is_bf16_supported()) else (torch.float16 if torch.cuda.is_available() else torch.float32)
+    device = "cuda"
+    dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
     print(f"Loading {instruct_model_name} for paraphrasing on {device}...")
 
     try:

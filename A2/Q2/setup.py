@@ -23,7 +23,6 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
     print(f"Task 2 Setup: Initializing in {output_dir}")
 
-    #
     try:
         vocab_size = AutoConfig.from_pretrained(args.model_name, local_files_only = True).vocab_size
     except Exception:
