@@ -61,7 +61,7 @@ def main():
     tokenizer, model = load_model(args.model_name)
     answers, features = answer_with_features(items, tokenizer, model, config)
     labels = np.array([int(any(contains(a, g) for g in item["answers"])) for a, item in zip(answers, items)])
-    print(f"Training generation accuracy: {labels.mean():.2%}% ({labels.sum()}/{len(labels)})")
+    print(f"Training generation accuracy: {labels.mean():.2%} ({labels.sum()}/{len(labels)})")
 
     clf = LogisticRegression().fit(features, labels)
     config["coef"] = clf.coef_[0].tolist()

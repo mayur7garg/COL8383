@@ -141,7 +141,7 @@ def main():
                 "id": item["id"],
                 "answer": ans,
                 "confidence": float(conf),
-                "abstain": bool(conf < config["abstain_threshold"])
+                "abstain": bool(conf < config["abstention_threshold"])
             }) + "\n")
 
     print(f"Predictions written to {target_path}")
