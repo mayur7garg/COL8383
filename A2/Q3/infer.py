@@ -1,191 +1,150 @@
-#!/usr/bin/env python3
-"""
-Task 3 Inference: Calibrated Question Answering with Abstention
-Generates concise answers, calibrated confidences in [0, 1], and optimal abstention decisions.
-Writes <output_dir>/pred_<input_filename>
-"""
-
 import argparse
 import json
-import math
+import re
+import string
 import sys
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Tuple
 
 import numpy as np
 import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from transformers import AutoTokenizer, AutoModelForCausalLM, set_seed
 
+SYSTEM_PROMPT = (
+    "You are a direct, factual question-answering assistant. Provide only the concise, direct answer to the question in as few words as possible without any explanation."
+)
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Task 3 Calibrated QA Inference")
-    parser.add_argument("input_file", type=str, help="Path to input questions JSONL file")
-    parser.add_argument("output_dir", type=str, help="Output directory where calibration_config.json resides")
-    parser.add_argument("--batch_size", type=int, default=16, help="Batch size for inference")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("input_file", type = str)
+    parser.add_argument("output_dir", type = str)
     return parser.parse_args()
 
+def read_jsonl(path: Path) -> List[Dict[str, Any]]:
+    with path.open("r", encoding = "utf-8") as f:
+        return [json.loads(line) for line in f if line.strip()]
 
-def load_config(output_dir: Path) -> Dict[str, Any]:
-    config_path = output_dir / "calibration_config.json"
-    if not config_path.exists():
-        print(f"Warning: calibration_config.json not found in {output_dir}. Using robust defaults.")
-        return {
-            "model_name": "Qwen/Qwen2.5-1.5B-Instruct",
-            "platt_w": 2.5,
-            "platt_b": -0.8,
-            "abstention_threshold": 0.45,
-            "max_new_tokens": 32,
-            "system_prompt": "You are a direct, factual question-answering assistant. Provide only the concise, direct answer to the question in as few words as possible without explanation."
-        }
-    with config_path.open("r", encoding="utf-8") as f:
-        return json.load(f)
+def normalize_answer(ans: str) -> str:
+    ans = ans.lower().translate(str.maketrans("", "", string.punctuation))
+    ans = re.sub(r"\b(a|an|the)\b", " ", ans)
+    return " ".join(ans.split())
 
+def contains(ans: str, sub: str) -> bool:
+    t, s = normalize_answer(ans).split(), normalize_answer(sub).split()
+    return bool(s) and any(t[i:i + len(s)] == s for i in range(len(t) - len(s) + 1))
 
-def build_prompt(question: str, system_prompt: str, tokenizer) -> str:
+def load_model(model_name: str):
+    dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(model_name, local_files_only = True)
+        model = AutoModelForCausalLM.from_pretrained(model_name, dtype =dtype, device_map="auto", local_files_only = True)
+    except Exception:
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        model = AutoModelForCausalLM.from_pretrained(model_name, dtype =dtype, device_map="auto")
+    tokenizer.padding_side = "left"
+    return tokenizer, model.eval()
+
+def build_prompt(question: str, tokenizer) -> str:
     messages = [
-        {"role": "system", "content": system_prompt},
+        {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": f"Question: {question}\nAnswer:"}
     ]
-    return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    return tokenizer.apply_chat_template(messages, tokenize = False, add_generation_prompt = True)
 
+
+def clean_answer(text: str) -> str:
+    text = text.strip()
+    return text[7:].strip() if text.lower().startswith("answer:") else text
+
+
+@torch.no_grad()
+def answer_with_features(items: List[Dict[str, Any]], tokenizer, model, cfg: Dict[str, Any]) -> Tuple[List[str], np.ndarray]:
+    k = cfg["num_samples"]
+    common = dict(
+        max_new_tokens = cfg["max_new_tokens"],
+        repetition_penalty = 1.0,
+        top_k = None, top_p = None,
+        pad_token_id = tokenizer.pad_token_id
+    )
+    answers, features = [], []
+    bs = cfg["batch_size"]
+
+    for start in range(0, len(items), bs):
+        batch = items[start : start + bs]
+        prompts = [build_prompt(it["question"], tokenizer) for it in batch]
+        inputs = tokenizer(prompts, return_tensors = "pt", padding = True).to(model.device)
+        prompt_len = inputs["input_ids"].shape[1]
+
+        greedy = model.generate(
+            **inputs,
+            do_sample = False,
+            temperature = None,
+            output_logits = True,
+            return_dict_in_generate = True,
+            **common
+        )
+        seqs = greedy.sequences[:, prompt_len:]
+        token_lp = torch.stack([
+            torch.log_softmax(step.float(), dim=-1).gather(1, seqs[:, i:i + 1]).squeeze(1) for i, step in enumerate(greedy.logits)
+            ],
+            dim=1
+        )
+        valid = (seqs != tokenizer.pad_token_id)
+
+        sampled = None
+        if k >0:
+            out = model.generate(**inputs, do_sample = True, temperature = cfg["temperature"], num_return_sequences  = k, **common)
+            sampled = tokenizer.batch_decode(out[:, prompt_len:], skip_special_tokens = True)
+
+        for b in range(len(batch)):
+            lp = token_lp[b][valid[b]]
+            ans = clean_answer(tokenizer.decode(seqs[b], skip_special_tokens = True))
+            feats = [lp.mean().item(), lp.min().item()] if len(lp) else [-10.0, -10.0]
+
+            if sampled is not None:
+                samples = [clean_answer(s) for s in sampled[b * k : (b + 1) * k]]
+                feats.append(float(np.mean([contains(s, ans) or contains(ans, s) for s in samples])))
+            answers.append(ans)
+            features.append(feats)
+
+        print(f"Processed {min(start + bs, len(items))}/{len(items)} items.", end="\r", flush=True)
+    return answers, np.array(features, dtype=np.float64)
+
+def confidence(features: np.ndarray, cfg: Dict[str, Any]) -> np.ndarray:
+    logits = features @ np.array(cfg["coef"]) + cfg["intercept"]
+    return 1.0 / (1.0 + np.exp(-logits))
 
 def main():
     args = parse_args()
     input_path = Path(args.input_file).resolve()
     output_dir = Path(args.output_dir).resolve()
-    output_dir.mkdir(parents=True, exist_ok=True)
 
-    config = load_config(output_dir)
-    model_name = config.get("model_name", "Qwen/Qwen2.5-1.5B-Instruct")
-    platt_w = float(config.get("platt_w", 2.5))
-    platt_b = float(config.get("platt_b", -0.8))
-    threshold = float(config.get("abstention_threshold", 0.45))
-    system_prompt = config.get("system_prompt", "You are a direct, factual question-answering assistant. Provide only the concise, direct answer to the question in as few words as possible without explanation.")
+    config_path = output_dir / "calibration_config.json"
+    if not config_path.exists():
+        print(f"Error: calibration_config.json not found in {output_dir}")
+        sys.exit(1)
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    dtype = torch.bfloat16 if (torch.cuda.is_available() and torch.cuda.is_bf16_supported()) else (torch.float16 if torch.cuda.is_available() else torch.float32)
+    with config_path.open("r", encoding="utf-8") as f:
+        config = json.load(f)
+    set_seed(config["seed"])
 
-    print(f"Running Task 3 inference on: {input_path.name}")
-    print(f"Output directory: {output_dir}")
-    print(f"Device: {device}, dtype: {dtype}")
-    print(f"Platt scaling parameters: w={platt_w:.4f}, b={platt_b:.4f} | Abstain threshold: {threshold:.4f}")
+    items = read_jsonl(input_path)
+    print(f"Running inference on {len(items)} items from {input_path}...")
+    tokenizer, model = load_model(config["model_name"])
+    answers, features = answer_with_features(items, tokenizer, model, config)
+    confs = confidence(features, config)
 
-    try:
-        tokenizer = AutoTokenizer.from_pretrained(model_name, local_files_only=True)
-    except Exception:
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
-
-    if tokenizer.pad_token_id is None:
-        tokenizer.pad_token = tokenizer.eos_token
-    tokenizer.padding_side = "left"
-
-    try:
-        model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            torch_dtype=dtype,
-            device_map="auto",
-            local_files_only=True
-        )
-    except Exception:
-        model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            torch_dtype=dtype,
-            device_map="auto"
-        )
-    model.eval()
-
-    items = []
-    with input_path.open("r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                items.append(json.loads(line))
-
-    print(f"Processing {len(items)} questions in batches of {args.batch_size}...")
-    batch_size = args.batch_size
-    predictions: List[Dict[str, Any]] = []
-
-    with torch.no_grad():
-        for start_idx in range(0, len(items), batch_size):
-            batch = items[start_idx : start_idx + batch_size]
-            prompts = [build_prompt(it["question"], system_prompt, tokenizer) for it in batch]
-            inputs = tokenizer(prompts, return_tensors="pt", padding=True, truncation=True, max_length=512).to(device)
-
-            gen_outputs = model.generate(
-                **inputs,
-                max_new_tokens=32,
-                do_sample=False,
-                temperature=None,
-                top_p=None,
-                return_dict_in_generate=True,
-                output_scores=True,
-                pad_token_id=tokenizer.pad_token_id
-            )
-
-            # Stack generation step scores: [batch_size, seq_len, vocab_size]
-            stacked_scores = torch.stack(gen_outputs.scores, dim=1)
-            log_probs = torch.log_softmax(stacked_scores, dim=-1)
-
-            input_len = inputs["input_ids"].shape[1]
-            generated_sequences = gen_outputs.sequences[:, input_len:]
-
-            for b_idx, it in enumerate(batch):
-                seq_tokens = generated_sequences[b_idx]
-                non_pad_mask = (seq_tokens != tokenizer.pad_token_id)
-                active_tokens = seq_tokens[non_pad_mask]
-
-                if len(active_tokens) > 0:
-                    token_log_probs = []
-                    for t_step in range(len(active_tokens)):
-                        tok_id = active_tokens[t_step].item()
-                        tok_lp = log_probs[b_idx, t_step, tok_id].item()
-                        token_log_probs.append(tok_lp)
-                    mean_lp = float(np.mean(token_log_probs))
-                    raw_conf = math.exp(mean_lp)
-                else:
-                    raw_conf = 0.10
-
-                # Calibrated probability in [0, 1] via Platt scaling
-                logit_val = platt_w * raw_conf + platt_b
-                calibrated_conf = 1.0 / (1.0 + math.exp(-max(min(logit_val, 15.0), -15.0)))
-                # Clip confidence to [0.01, 0.99]
-                calibrated_conf = max(0.01, min(0.99, calibrated_conf))
-
-                answer_str = tokenizer.decode(active_tokens, skip_special_tokens=True).strip()
-                # Clean any lingering prompt labels
-                if answer_str.lower().startswith("answer:"):
-                    answer_str = answer_str[7:].strip()
-
-                abstain_decision = bool(calibrated_conf < threshold)
-
-                predictions.append({
-                    "id": it["id"],
-                    "answer": answer_str,
-                    "confidence": round(calibrated_conf, 4),
-                    "abstain": abstain_decision
-                })
-
-            if (start_idx + batch_size) % 100 == 0 or (start_idx + len(batch)) == len(items):
-                print(f"Completed {min(start_idx + batch_size, len(items))}/{len(items)} items.")
-
-    # Target filename: pred_<input_filename> as per PDF Page 9
-    out_filename = f"pred_{input_path.name}"
-    target_path = output_dir / out_filename
-
+    target_path = output_dir / f"pred_{input_path.name}"
     with target_path.open("w", encoding="utf-8") as f:
-        for p in predictions:
-            f.write(json.dumps(p) + "\n")
+        for item, ans, conf in zip(items, answers, confs):
+            f.write(json.dumps({
+                "id": item["id"],
+                "answer": ans,
+                "confidence": float(conf),
+                "abstain": bool(conf < config["abstain_threshold"])
+            }) + "\n")
 
-    # Also mirror to predictions/Q3/
-    pred_q3_dir = Path(__file__).resolve().parent.parent / "predictions" / "Q3"
-    pred_q3_dir.mkdir(parents=True, exist_ok=True)
-    mirror_path = pred_q3_dir / out_filename
-    with mirror_path.open("w", encoding="utf-8") as f:
-        for p in predictions:
-            f.write(json.dumps(p) + "\n")
-
-    print(f"Task 3 inference complete: {len(predictions)} lines written to {target_path}")
-
+    print(f"Predictions written to {target_path}")
 
 if __name__ == "__main__":
     main()
