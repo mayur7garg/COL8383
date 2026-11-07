@@ -14,7 +14,7 @@ def parse_args():
     parser.add_argument("output_dir", type = str)
     parser.add_argument("--model_name", type = str, default = "Qwen/Qwen2.5-1.5B-Instruct")
     parser.add_argument("--max_train_samples", type = int, default = 0)
-    parser.add_argument("--num_samples", type = int, default = 5)
+    parser.add_argument("--num_samples", type = int, default = 0)
     parser.add_argument("--temperature", type = float, default = 1.0)
     parser.add_argument("--max_new_tokens", type = int, default = 32)
     parser.add_argument("--batch_size", type=int, default=32)

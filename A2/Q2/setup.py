@@ -13,8 +13,8 @@ def parse_args():
     parser.add_argument("--secret_key", type = int, default=20261103)
     parser.add_argument("--gamma_bi", type = float, default=0.5)
     parser.add_argument("--gamma_uni", type = float, default=0.5)
-    parser.add_argument("--delta_bi", type = float, default=1.4)
-    parser.add_argument("--delta_uni", type = float, default=0.6)
+    parser.add_argument("--delta_bi", type = float, default = 0.0)
+    parser.add_argument("--delta_uni", type = float, default = 1.5)
     return parser.parse_args()
 
 def main():
@@ -31,7 +31,7 @@ def main():
 
     # Mersenne Prime M31
     rng = np.random.RandomState(args.secret_key)
-    token_hashes = rng.randint(0, 2147483647, size=vocab_size, dtype=np.int64).tolist()
+    token_hashes = rng.randint(0, 2147483647, size = vocab_size, dtype = np.int64).tolist()
 
     config: Dict[str, Any] = {
         "task": "Task 2: Watermarking Generated Text",
